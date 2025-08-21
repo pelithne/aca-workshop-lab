@@ -1,0 +1,10 @@
+import express from 'express';
+import aiRouter from './ai.js';
+const app = express();
+const port = process.env.PORT || 8080;
+app.use(express.json());
+app.get('/healthz', (req,res)=>res.status(200).send('ok'));
+app.get('/ready', (req,res)=>res.status(200).send('ready'));
+app.get('/', (req,res)=>{res.json({message:'Hello from Azure Container Apps!', version:process.env.APP_VERSION||'v1', timestamp:new Date().toISOString()});});
+app.use('/ai', aiRouter);
+app.listen(port, ()=>console.log(`server listening on ${port}`));

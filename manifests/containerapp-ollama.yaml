@@ -1,0 +1,38 @@
+properties:
+  configuration:
+    ingress:
+      external: true
+      targetPort: 8080
+      transport: auto
+  template:
+    containers:
+      - name: app
+        image: ${APP_IMAGE}
+        env:
+          - name: AZURE_OPENAI_ENDPOINT
+            value: ${AZURE_OPENAI_ENDPOINT}
+          - name: AZURE_OPENAI_DEPLOYMENT
+            value: ${AZURE_OPENAI_DEPLOYMENT}
+          - name: OLLAMA_BASE
+            value: http://127.0.0.1:11434
+          - name: OLLAMA_MODEL
+            value: phi3.5:latest
+        probes:
+          - type: liveness
+            httpGet: { path: /healthz, port: 8080 }
+          - type: readiness
+            httpGet: { path: /ready, port: 8080 }
+      - name: ollama
+        image: ollama/ollama:latest
+        args: [ 'sh','-c',"ollama serve & sleep 5; curl -s http://127.0.0.1:11434/api/pull -d '{\"name\":\"phi3.5:latest\"}' || true; wait" ]
+        probes:
+          - type: liveness
+            httpGet: { path: /api/tags, port: 11434 }
+          - type: readiness
+            httpGet: { path: /api/tags, port: 11434 }
+    scale:
+      minReplicas: 1
+      maxReplicas: 10
+      rules:
+        - name: http
+          http: { concurrentRequests: 60 }

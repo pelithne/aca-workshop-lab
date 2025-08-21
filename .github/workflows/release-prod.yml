@@ -1,0 +1,72 @@
+name: release-prod
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+env:
+  RESOURCE_GROUP: rg-aca-lab
+  LOCATION: westeurope
+  ACR_NAME: acracalab${{ github.run_number }}
+  ACA_ENV_NAME: acaenv-weu
+  APP_NAME: shopapi
+  IMAGE_NAME: shopapi
+  USE_OLLAMA: 'false'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build & push image
+        run: |
+          az group create -n $RESOURCE_GROUP -l $LOCATION
+          az acr create -g $RESOURCE_GROUP -n $ACR_NAME --sku Standard || true
+          ACR_LOGIN=$(az acr show -n $ACR_NAME -g $RESOURCE_GROUP --query loginServer -o tsv)
+          az acr login -n $ACR_NAME
+          IMAGE=$ACR_LOGIN/$IMAGE_NAME:$(git rev-parse --short HEAD)
+          docker build -t $IMAGE .
+          docker push $IMAGE
+          echo "IMAGE_URI=$IMAGE" >> $GITHUB_ENV
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - name: Cosign verify (gate)
+        run: |
+          echo "Verifying image signature..."
+          echo "(Provide COSIGN_PUBLIC_KEY and uncomment verify command)"
+          # cosign verify --key "$COSIGN_PUBLIC_KEY" $IMAGE_URI
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy ACA (with optional Ollama)
+        run: |
+          ACR_LOGIN=$(echo $IMAGE_URI | cut -d'/' -f1)
+          MI_RES_ID=$(az identity show -g $RESOURCE_GROUP -n mi-${APP_NAME} --query id -o tsv || echo '')
+          if [ -z "$MI_RES_ID" ]; then
+            az deployment group create -g $RESOURCE_GROUP -f bicep/main.bicep -p location=$LOCATION namePrefix=acalab
+            MI_RES_ID=$(az identity show -g $RESOURCE_GROUP -n mi-${APP_NAME} --query id -o tsv)
+          fi
+          if [ "$USE_OLLAMA" = "true" ]; then
+            export APP_IMAGE=$IMAGE_URI
+            export AZURE_OPENAI_ENDPOINT=${{ secrets.AZURE_OPENAI_ENDPOINT }}
+            export AZURE_OPENAI_DEPLOYMENT=${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
+            cat manifests/containerapp-ollama.yaml | envsubst > ca.yaml
+            az containerapp update -g $RESOURCE_GROUP -n $APP_NAME --yaml ca.yaml --registry-identity $MI_RES_ID --registry-server $ACR_LOGIN ||             az containerapp create -g $RESOURCE_GROUP -n $APP_NAME --environment $ACA_ENV_NAME --yaml ca.yaml --registry-identity $MI_RES_ID --registry-server $ACR_LOGIN
+          else
+            az containerapp update -g $RESOURCE_GROUP -n $APP_NAME               --image $IMAGE_URI               --registry-server $ACR_LOGIN               --registry-identity $MI_RES_ID ||             az containerapp create -g $RESOURCE_GROUP -n $APP_NAME               --environment $ACA_ENV_NAME               --image $IMAGE_URI               --ingress external --target-port 8080 --transport auto               --min-replicas 1 --max-replicas 10               --scale-rule-name http --scale-rule-type http --scale-rule-http-concurrency 60               --cpu 0.5 --memory 1.0Gi               --registry-server $ACR_LOGIN               --registry-identity $MI_RES_ID               --user-assigned $MI_RES_ID
+      - name: Post-deploy Front Door + WAF (optional)
+        run: |
+          bash scripts/postdeploy-frontdoor.sh

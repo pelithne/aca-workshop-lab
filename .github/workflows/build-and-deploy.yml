@@ -1,0 +1,56 @@
+name: build-and-deploy-aca
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+env:
+  RESOURCE_GROUP: rg-aca-lab
+  LOCATION: westeurope
+  ACR_NAME: acracalab${{ github.run_number }}
+  ACA_ENV_NAME: acaenv-weu
+  APP_NAME: shopapi
+  IMAGE_NAME: shopapi
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - run: az group create -n $RESOURCE_GROUP -l $LOCATION
+      - run: |
+          az deployment group create -g $RESOURCE_GROUP -f bicep/main.bicep -p location=$LOCATION namePrefix=acalab
+      - run: |
+          ACR_LOGIN=$(az acr show -n $ACR_NAME -g $RESOURCE_GROUP --query loginServer -o tsv || echo '')
+          if [ -z "$ACR_LOGIN" ]; then
+            az acr create -g $RESOURCE_GROUP -n $ACR_NAME --sku Standard
+            ACR_LOGIN=$(az acr show -n $ACR_NAME -g $RESOURCE_GROUP --query loginServer -o tsv)
+          fi
+          az acr login -n $ACR_NAME
+          IMAGE=$ACR_LOGIN/$IMAGE_NAME:$(git rev-parse --short HEAD)
+          docker build -t $IMAGE .
+          docker push $IMAGE
+          echo "IMAGE_URI=$IMAGE" >> $GITHUB_ENV
+      - run: |
+          MI_ID=$(az identity show -g $RESOURCE_GROUP -n mi-${APP_NAME} --query clientId -o tsv)
+          ACR_ID=$(az acr show -n $ACR_NAME -g $RESOURCE_GROUP --query id -o tsv)
+          az role assignment create --assignee $MI_ID --role AcrPull --scope $ACR_ID || true
+      - run: |
+          ENV_ID=$(az containerapp env show -g $RESOURCE_GROUP -n $ACA_ENV_NAME --query id -o tsv)
+          MI_RES_ID=$(az identity show -g $RESOURCE_GROUP -n mi-${APP_NAME} --query id -o tsv)
+          ACR_LOGIN=$(az acr show -n $ACR_NAME -g $RESOURCE_GROUP --query loginServer -o tsv)
+          IMAGE_URI=${{ env.IMAGE_URI }}
+          if az containerapp show -g $RESOURCE_GROUP -n $APP_NAME >/dev/null 2>&1; then
+            az containerapp update -g $RESOURCE_GROUP -n $APP_NAME               --image $IMAGE_URI               --registry-server $ACR_LOGIN               --registry-identity $MI_RES_ID
+          else
+            az containerapp create -g $RESOURCE_GROUP -n $APP_NAME               --environment $ACA_ENV_NAME               --image $IMAGE_URI               --ingress external --target-port 8080 --transport auto               --min-replicas 1 --max-replicas 10               --scale-rule-name http --scale-rule-type http --scale-rule-http-concurrency 60               --cpu 0.5 --memory 1.0Gi               --registry-server $ACR_LOGIN               --registry-identity $MI_RES_ID               --user-assigned $MI_RES_ID
+          fi
+      - run: |
+          az containerapp update -g $RESOURCE_GROUP -n $APP_NAME             --set-template-probes liveness=httpGet,path=/healthz,port=8080,initialDelaySeconds=10,periodSeconds=10                                    readiness=httpGet,path=/ready,port=8080,initialDelaySeconds=5,periodSeconds=5
+          FQDN=$(az containerapp show -g $RESOURCE_GROUP -n $APP_NAME --query properties.configuration.ingress.fqdn -o tsv)
+          echo "App URL: https://$FQDN" >> $GITHUB_STEP_SUMMARY
