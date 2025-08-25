@@ -7,7 +7,7 @@ End‑to‑end hands‑on labs for modernizing and scaling workloads on **Azure 
 | Lab | Focus | Key Outcomes |
 |-----|-------|--------------|
 | [Lab 1 – App Service ➜ ACA](labs/LAB1-AppService-to-ACA.md) | Containerize & deploy | ACR push, ACA env, ingress, probes, autoscale, revisions |
-| [Lab 2 – AI Inference on ACA](labs/LAB2-Inference-on-ACA.md) | AOAI or local model | Managed identity auth (AOAI) OR sidecar Ollama pattern, HTTP autoscale |
+| [Lab 2 – AI Training & Inference](labs/LAB2-Inference-on-ACA.md) | Train (Azure ML) + serve on ACA | Model training job, model registry, build inference image, deploy & autoscale |
 | [Lab 3 – Security Hardening & Secrets](labs/LAB3-Security-Hardening.md) | Defense-in-depth | Managed identity to ACR/Key Vault, Front Door + WAF, image signing, private egress |
 
 Additional (facilitator / design) segments cover: When to choose ACA vs AKS, Global active‑active pattern, Operations & cost optimization, and Executive readout.
